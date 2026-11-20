@@ -1,15 +1,29 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { TaskRepository } from '../src/main/repository';
 import type { CanvasItem } from '../src/shared/canvas';
 const source = 'a'.repeat(64);
 function item(key: string, title=key, date='2026-11-01'): CanvasItem { return {key,title,description:'Canvas原始说明',url:'https://canvas.example/assignments/1',due:{mode:'value',value:{kind:'date',date}}}; }
-function fixture() { const dir=mkdtempSync(join(tmpdir(),'canvas-repo-'));return {path:join(dir,'todos.sqlite'),clean:()=>rmSync(dir,{recursive:true,force:true})}; }
+// Windows runners may retain a directory entry briefly after database handles close.
+// Retry only transient cleanup errors, with a finite deadline; never suppress failure.
+function removeFixture(dir: string) {
+ const delay=new Int32Array(new SharedArrayBuffer(4));
+ for(let attempt=0;;attempt++) {
+  try {rmSync(dir,{recursive:true,force:true});return;}
+  catch(error) {
+   if(attempt>=10 || !['EPERM','EBUSY','ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code??''))throw error;
+   Atomics.wait(delay,0,0,50*(attempt+1));
+  }
+ }
+}
+function fixture() { const dir=mkdtempSync(join(tmpdir(),'canvas-repo-'));return {path:join(dir,'todos.sqlite'),clean:()=>removeFixture(dir)}; }
 
 test('Canvas重复与重启幂等，源标题日期更新保留本地备注完成子树，并报告修改', () => {
  const f=fixture();let repo=new TaskRepository(f.path);
@@ -99,19 +113,36 @@ test('长说明完整保存、更新来源不覆盖个人备注与完成状态�
 
 test('真实v4升级v5保留个人数据，旧来源待下次同步补齐；坏映射回滚迁移', () => {
  for(const bad of [false,true]) {
-  const f=fixture();let repo=new TaskRepository(f.path);
-  const id=repo.syncCanvas(source,[item('legacy')]).changes[0].id;repo.update(id,{notes:'旧导入说明或用户编辑均不可丢弃'},repo.get(id).revision);repo.setCompleted(id,true,repo.get(id).revision);
-  const before=repo.get(id);repo.close();
+  const f=fixture();let repo:TaskRepository|null=new TaskRepository(f.path);
   try {
-   const db=new DatabaseSync(f.path);db.exec('ALTER TABLE canvas_items DROP COLUMN url; ALTER TABLE canvas_items DROP COLUMN description; ALTER TABLE todos DROP COLUMN completed_at; PRAGMA user_version=4;');
-   if(bad)db.prepare('UPDATE canvas_items SET source_id=?').run('bad');db.close();
+   const id=repo.syncCanvas(source,[item('legacy')]).changes[0].id;
+   repo.update(id,{notes:'旧导入说明或用户编辑均不可丢弃'},repo.get(id).revision);
+   repo.setCompleted(id,true,repo.get(id).revision);
+   // Force the timestamps apart so the migration fallback is always exercised.
+   repo.update(id,{notes:'旧导入说明或用户编辑均不可丢弃'},repo.get(id).revision);
+   const before=repo.get(id);assert.notEqual(before.completedAt,before.updatedAt);
+   repo.close();repo=null;
+   const db=new DatabaseSync(f.path);
+   try {
+    db.exec('ALTER TABLE canvas_items DROP COLUMN url; ALTER TABLE canvas_items DROP COLUMN description; ALTER TABLE todos DROP COLUMN completed_at; PRAGMA user_version=4;');
+    if(bad)db.prepare('UPDATE canvas_items SET source_id=?').run('bad');
+   } finally {db.close();}
    if(bad)assert.throws(()=>new TaskRepository(f.path));
    else {
-    repo=new TaskRepository(f.path);assert.deepEqual(repo.get(id),before);assert.deepEqual(repo.getCanvasSource(id),{description:'',url:''});
-    assert.equal(repo.syncCanvas(source,[item('legacy')]).updated,1);assert.equal(repo.get(id).notes,before.notes);assert.equal(repo.get(id).completed,true);assert.equal(repo.list().length,1);repo.close();
+    repo=new TaskRepository(f.path);
+    // Old databases have no completion timestamp; the documented fallback is updatedAt.
+    assert.deepEqual(repo.get(id),{...before,completedAt:before.updatedAt});
+    assert.deepEqual(repo.getCanvasSource(id),{description:'',url:''});
+    assert.equal(repo.syncCanvas(source,[item('legacy')]).updated,1);
+    assert.equal(repo.get(id).notes,before.notes);assert.equal(repo.get(id).completed,true);assert.equal(repo.list().length,1);
+    repo.close();repo=null;
    }
-   const check=new DatabaseSync(f.path);assert.equal(check.prepare('PRAGMA user_version').get()!.user_version,bad?4:6);assert.equal(check.prepare('PRAGMA table_info(canvas_items)').all().length,bad?3:5);check.close();
-  } finally {f.clean();}
+   const check=new DatabaseSync(f.path);
+   try {
+    assert.equal(check.prepare('PRAGMA user_version').get()!.user_version,bad?4:6);
+    assert.equal(check.prepare('PRAGMA table_info(canvas_items)').all().length,bad?3:5);
+   } finally {check.close();}
+  } finally {repo?.close();f.clean();}
  }
 });
 
@@ -123,4 +154,34 @@ test('v4旧备份来源映射可恢复，重新同步补齐说明但不复制为
   target.importBackup({...backup,version:4,canvasItems:backup.canvasItems.map(({sourceId,key,todoId})=>({sourceId,key,todoId}))});
   assert.deepEqual(target.getCanvasSource(id),{description:'',url:''});assert.equal(target.syncCanvas(source,[item('old-backup')]).updated,1);assert.equal(target.get(id).notes,'旧版备注内容');assert.equal(target.list().length,1);
  } finally {repo.close();target.close();a.clean();b.clean();}
+});
+
+
+test('Windows短暂占用临时目录时，清理应等待句柄释放后成功', {skip:process.platform!=='win32'}, async () => {
+ const f=fixture();
+ writeFileSync(f.path,'temporary lock fixture');
+ const script=[
+  'import ctypes,sys,time',
+  'from ctypes import wintypes',
+  'kernel=ctypes.WinDLL("kernel32",use_last_error=True)',
+  'kernel.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p]',
+  'kernel.CreateFileW.restype=wintypes.HANDLE',
+  'kernel.CloseHandle.argtypes=[wintypes.HANDLE]',
+  'handle=kernel.CreateFileW(sys.argv[1],0x80000000,1,None,3,0,None)',
+  'assert handle not in (None,ctypes.c_void_p(-1).value), "directory lock failed"',
+  'print("LOCKED",flush=True)',
+  'time.sleep(0.4)',
+  'kernel.CloseHandle(handle)',
+ ].join('\n');
+ const child=spawn(resolve('.venv/Scripts/python.exe'),['-u','-c',script,f.path],{windowsHide:true,stdio:['ignore','pipe','pipe']});
+ const exited=once(child,'close');
+ try {
+  const ready=await Promise.race([once(child.stdout,'data'),exited.then(()=>{throw Error('lock process exited before ready');}),new Promise<never>((_,reject)=>{const timer=setTimeout(()=>reject(Error('lock process timeout')),5000);timer.unref();})]);
+  assert.equal(String(ready[0]).trim(),'LOCKED');
+  f.clean();
+  assert.equal(existsSync(dirname(f.path)),false);
+ } finally {
+  await exited;
+  f.clean();
+ }
 });
