@@ -11,6 +11,8 @@ const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http:
 for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement })) Object.defineProperty(globalThis, key, { value, configurable: true });
 const { render, fireEvent, waitFor, cleanup, within } = createRequire(process.cwd() + '/package.json')('@testing-library/react') as typeof import('@testing-library/react');
 afterEach(() => cleanup());
+function assertAbsent(value:Element|null) {assert.ok(value===null,'Expected DOM element to be absent');}
+
 const ok = <T,>(data: T) => ({ ok:true as const, data });
 let serial = 0;
 function task(title:string, overrides:Partial<Todo> = {}):Todo { return {id:`00000000-0000-4000-8000-${String(++serial).padStart(12,'0')}`,parentId:null,title,notes:'原备注',completed:false,due:{mode:'value',value:{kind:'date',date:localDay(new Date())}},createdAt:'2026-01-01T00:00:00Z',updatedAt:'2026-01-01T00:00:00Z',revision:1,deletedAt:null,trashBatchId:null,...overrides}; }
@@ -29,7 +31,7 @@ test('乌鸦只计今日及无截止根，展开列表完成沉底，成功飞�
   fireEvent.click(ui.getByRole('button',{name:'完成 今日甲'}));
   await waitFor(()=>assert.equal(ui.container.querySelectorAll('.crow-flying').length,1));
   assert.ok(ui.container.querySelector('.crow-flying .crow-flight-sprite'));
-  assert.equal(ui.container.querySelector('.crow-flying img.crow-illustration'),null);
+  assertAbsent(ui.container.querySelector('.crow-flying img.crow-illustration'));
   assert.deepEqual(Array.from(ui.container.querySelectorAll('.crow-task-title')).map(n=>n.textContent),['无截止','已完成','今日甲']);
   await waitFor(()=>assert.equal(ui.container.querySelectorAll('.crow-bird').length,1),{timeout:1800});
   fireEvent.click(ui.getByRole('button',{name:'取消完成 今日甲'}));
@@ -47,46 +49,46 @@ test('乌鸦打开只读详情，编辑预填；跨窗更新保留草稿及原re
   const changed=setup([item],{editTodo:async(_id,_patch,_completed,revision)=>{usedRevision=revision;return{ok:false,error:'事项已变化，请重新选择。'};}});
   const ui=render(<CrowWidget/>);await waitFor(()=>assert.ok(ui.getByRole('button',{name:'查看任务 原标题'})));
   fireEvent.click(ui.getByRole('button',{name:'查看任务 原标题'}));await waitFor(()=>assert.ok(ui.getByLabelText('悬浮窗任务详情')));
-  assert.equal(ui.queryByLabelText('标题'),null);fireEvent.click(ui.getByRole('button',{name:'编辑任务'}));
+  assertAbsent(ui.queryByLabelText('标题'));fireEvent.click(ui.getByRole('button',{name:'编辑任务'}));
   assert.equal((ui.getByLabelText('标题') as HTMLInputElement).value,'原标题');assert.equal((ui.getByLabelText('备注') as HTMLTextAreaElement).value,'原备注');
   fireEvent.change(ui.getByLabelText('标题'),{target:{value:'我的草稿'}});item.title='另一窗口修改';item.revision=2;changed();
   await waitFor(()=>assert.ok(ui.getByRole('button',{name:'查看任务 另一窗口修改'})));
   assert.equal((ui.getByLabelText('标题') as HTMLInputElement).value,'我的草稿');fireEvent.click(ui.getByRole('button',{name:'保存修改'}));
   await waitFor(()=>assert.equal(usedRevision,1));assert.equal((ui.getByLabelText('标题') as HTMLInputElement).value,'我的草稿');
-  assert.ok(ui.getByRole('alert'));assert.equal(ui.container.querySelector('.notification'),null);
+  assert.ok(ui.getByRole('alert'));assertAbsent(ui.container.querySelector('.notification'));
 });
 test('外部完成触发飞走，关闭控件有独立入口，空状态是空枝',async()=>{
   const item=task('外部任务');const changed=setup([item]);const ui=render(<CrowWidget/>);
   await waitFor(()=>assert.equal(ui.container.querySelectorAll('.crow-bird').length,1));item.completed=true;changed();
   await waitFor(()=>assert.equal(ui.container.querySelectorAll('.crow-flying').length,1));
   assert.ok(ui.getByRole('button',{name:'关闭悬浮窗'}));fireEvent.contextMenu(ui.getByLabelText('乌鸦待办悬浮窗'));assert.ok(ui.getByRole('button',{name:'退出整个应用'}));
-  await waitFor(()=>assert.equal(ui.container.querySelectorAll('.crow-bird').length,0),{timeout:1800});assert.equal(ui.queryByText('今天的枝头很安静。'),null);
+  await waitFor(()=>assert.equal(ui.container.querySelectorAll('.crow-bird').length,0),{timeout:1800});assertAbsent(ui.queryByText('今天的枝头很安静。'));
 });
 
 
 test('默认只留图案，点鸟仅显示单任务纸笺，挂饰切换列表，编辑中保护切换',async()=>{
   setup([task('枝头任务')]);const ui=render(<CrowWidget/>);
   await waitFor(()=>assert.ok(ui.getByRole('button',{name:'查看任务 枝头任务'})));
-  assert.equal(ui.container.querySelector('.crow-toolbar'),null);
+  assertAbsent(ui.container.querySelector('.crow-toolbar'));
   assert.equal(ui.container.querySelector('.crow-bird img')?.getAttribute('src'),'./art/raven-pencil.png');
   assert.equal(ui.container.querySelector('img.crow-branch')?.getAttribute('src'),'./art/branch-pencil.png');
-  assert.equal(ui.container.querySelector('.crow-bird svg'),null);
-  assert.equal(ui.queryByText(/未归巢/),null);
-  assert.equal(ui.queryByRole('button',{name:'退出整个应用'}),null);
+  assertAbsent(ui.container.querySelector('.crow-bird svg'));
+  assertAbsent(ui.queryByText(/未归巢/));
+  assertAbsent(ui.queryByRole('button',{name:'退出整个应用'}));
   assert.equal(ui.getByRole('button',{name:'展开今日待办'}).textContent,'');
   fireEvent.click(ui.getByRole('button',{name:'查看任务 枝头任务'}));
   await waitFor(()=>assert.ok(ui.getByLabelText('悬浮窗任务详情')));
-  assert.equal(ui.queryByLabelText('今日待办列表'),null);
+  assertAbsent(ui.queryByLabelText('今日待办列表'));
   assert.ok(ui.container.querySelector('.crow-paper-outline'));
   fireEvent.click(ui.getByRole('button',{name:'展开今日待办'}));
   await waitFor(()=>assert.ok(ui.getByLabelText('今日待办列表')));
-  assert.equal(ui.queryByLabelText('悬浮窗任务详情'),null);
+  assertAbsent(ui.queryByLabelText('悬浮窗任务详情'));
   fireEvent.click(ui.getByRole('button',{name:'查看任务 枝头任务'}));
   await waitFor(()=>assert.ok(ui.getByLabelText('悬浮窗任务详情')));
   fireEvent.click(ui.getByRole('button',{name:'编辑任务'}));
   fireEvent.change(ui.getByLabelText('标题'),{target:{value:'未保存'}});
   fireEvent.click(ui.getByRole('button',{name:'展开今日待办'}));
-  assert.equal(ui.queryByLabelText('今日待办列表'),null);
+  assertAbsent(ui.queryByLabelText('今日待办列表'));
   assert.equal((ui.getByLabelText('标题') as HTMLInputElement).value,'未保存');
   fireEvent.keyDown(ui.getByLabelText('乌鸦待办悬浮窗'),{key:'Escape'});
   assert.ok(ui.getByLabelText('悬浮窗任务详情'));
@@ -103,7 +105,7 @@ test('再次点击同一只乌鸦关闭任务详情，点击另一只切换详�
   await waitFor(()=>assert.ok(ui.getByLabelText('悬浮窗任务详情')));
   assert.ok(within(ui.getByLabelText('悬浮窗任务详情')).getByText('甲鸟'));
   fireEvent.click(ui.getByRole('button',{name:'查看任务 甲鸟'}));
-  await waitFor(()=>assert.equal(ui.queryByLabelText('悬浮窗任务详情'),null));
+  await waitFor(()=>assertAbsent(ui.queryByLabelText('悬浮窗任务详情')));
   assert.equal(ui.getByRole('button',{name:'展开今日待办'}).getAttribute('aria-expanded'),'false');
   fireEvent.click(ui.getByRole('button',{name:'查看任务 甲鸟'}));
   await waitFor(()=>assert.ok(ui.getByLabelText('悬浮窗任务详情')));
@@ -119,7 +121,7 @@ test('树枝最多五只，多余待办只用一只盘旋鸟表示，完整列�
   await waitFor(() => assert.equal(ui.container.querySelectorAll('.crow-bird').length, 5));
   assert.equal(ui.container.querySelectorAll('.crow-overflow').length, 1);
   assert.ok(ui.container.querySelector('.crow-overflow .crow-flight-sprite'));
-  assert.equal(ui.container.querySelector('.crow-overflow img'),null);
+  assertAbsent(ui.container.querySelector('.crow-overflow img'));
   fireEvent.click(ui.container.querySelector('.crow-overflow')!);
   await waitFor(() => assert.equal(ui.container.querySelectorAll('.crow-task').length, 8));
   items.slice(0, 3).forEach(item => { item.completed = true; item.revision++; }); changed();
@@ -192,8 +194,18 @@ test('拖动释放失焦及detail0点击不展开，移动失败也不扩大占�
   fireEvent.blur(window); pointer(window, 'pointerup', 120); fireEvent.click(bird, { detail: 0 });
   await waitFor(() => assert.ok(ui.queryByText('Error: 移动暂时失败')));
   assert.equal(expandedCalls, 0);
-  assert.equal(ui.container.querySelector('.crow-paper'), null);
+  assertAbsent(ui.container.querySelector('.crow-paper'));
   fireEvent.keyDown(bird, { key: 'Enter' }); fireEvent.click(bird, { detail: 0 });
   await waitFor(() => assert.ok(ui.container.querySelector('.crow-detail')));
   assert.equal(expandedCalls, 1);
+});
+
+
+test('DOM absence diagnostics remain bounded even with large attached state', () => {
+ const element=document.createElement('div');
+ Object.defineProperty(element,'attachedState',{value:'x'.repeat(8192),enumerable:true});
+ let message='';
+ try {assertAbsent(element);} catch(error) {message=(error as Error).message;}
+ assert.ok(message.length>0&&message.length<200,`diagnostic length: ${message.length}`);
+ assertAbsent(null);
 });
