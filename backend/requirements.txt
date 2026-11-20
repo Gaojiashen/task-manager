@@ -1,0 +1,6 @@
+tzdata==2025.3
+six==1.17.0
+python-dateutil==2.9.0.post0
+icalendar==6.3.2
+imapclient==3.0.1
+tzlocal==5.3.1
